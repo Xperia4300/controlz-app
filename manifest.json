@@ -1,10 +1,14 @@
 {
   "name": "ControlZ",
   "short_name": "ControlZ",
+  "description": "Control de ganancias diarias, semanales y mensuales",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait",
   "background_color": "#0d1b2e",
   "theme_color": "#0096c7",
+  "lang": "es",
   "icons": [
     {
       "src": "https://via.placeholder.com/192",
