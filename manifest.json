@@ -1,0 +1,20 @@
+{
+  "name": "ControlZ",
+  "short_name": "ControlZ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1b2e",
+  "theme_color": "#0096c7",
+  "icons": [
+    {
+      "src": "https://via.placeholder.com/192",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://via.placeholder.com/512",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
