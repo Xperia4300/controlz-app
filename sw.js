@@ -1,9 +1,8 @@
 // ControlZ Service Worker
 // Cambia este número de versión cada vez que subas una actualización
 // para que los usuarios reciban la nueva versión automáticamente.
-const VERSION = "v1.0.0";
+const VERSION = "v1.0.1";
 const CACHE_NAME = "controlz-" + VERSION;
-
 // Archivos que se guardan en caché para funcionar sin internet
 const ASSETS = [
   "/",
@@ -14,7 +13,6 @@ const ASSETS = [
   "/apple-touch-icon.png",
   "/favicon-32x32.png"
 ];
-
 // Instalación: guarda los archivos en caché
 self.addEventListener("install", event => {
   event.waitUntil(
@@ -22,7 +20,6 @@ self.addEventListener("install", event => {
   );
   self.skipWaiting();
 });
-
 // Activación: elimina cachés viejas (de versiones anteriores)
 self.addEventListener("activate", event => {
   event.waitUntil(
@@ -36,13 +33,14 @@ self.addEventListener("activate", event => {
   );
   self.clients.claim();
 });
-
 // Fetch: primero intenta red, si falla usa caché (offline)
 self.addEventListener("fetch", event => {
+  // ✅ No interceptar recursos externos (unpkg, cdnjs, etc.)
+  if (!event.request.url.startsWith(self.location.origin)) return;
+
   event.respondWith(
     fetch(event.request)
       .then(response => {
-        // Si la red responde, actualiza la caché con la versión nueva
         const clone = response.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         return response;
