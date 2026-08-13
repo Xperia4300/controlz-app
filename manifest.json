@@ -1,0 +1,24 @@
+{
+  "name": "ControlK",
+  "short_name": "ControlK",
+  "description": "Calculadora de pedidos Karri - Sala 127 Linares",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EEF2FA",
+  "theme_color": "#00B5A3",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
