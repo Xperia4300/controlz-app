@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>ControlK - Calculadora de Pedidos</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#00B5A3">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="ControlK">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #EEF2FA; font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif; }
+        * { box-sizing: border-box; }
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        input[type=number] { -moz-appearance: textfield; }
+        input:focus { outline: none; border-color: #00B5A3 !important; box-shadow: 0 0 0 3px rgba(0,181,163,0.15); }
+        button { font-family: inherit; }
+
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .msg-anim { animation: fadeIn 0.2s ease; }
+
+        @keyframes savedPulse {
+          0%   { opacity: 0; transform: scale(0.92); }
+          20%  { opacity: 1; transform: scale(1); }
+          80%  { opacity: 1; }
+          100% { opacity: 0; }
+        }
+        .saved-toast { animation: savedPulse 1.8s ease forwards; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const BASE_PRIMER_SEMANA = 2400;  // Karri L-V: base primer pedido
+        const BASE_MULTI_SEMANA  = 1800;  // Karri L-V: base desde el 2do pedido
+        const BASE_PRIMER_FDS    = 3000;  // Karri S-D/festivo: base primer pedido
+        const BASE_MULTI_FDS     = 2400;  // Karri S-D/festivo: base desde el 2do pedido
+        const POR_KM             = 200;   // Karri: $200 por km
+        const POR_SKU            = 100;   // Karri: $100 por SKU (desde el 1er SKU)
+        const IMPUESTO           = 0.1525;
+
+        // ─── Festivos Chile 2026 ─────────────────────────────────────────────
+        const FESTIVOS = new Set([
+          "2026-01-01","2026-04-03","2026-04-04","2026-05-01","2026-05-21",
+          "2026-06-21","2026-06-29","2026-07-16","2026-08-15","2026-09-18",
+          "2026-09-19","2026-10-12","2026-10-31","2026-11-01","2026-12-08",
+          "2026-12-25",
+        ]);
+
+        function esDiaEspecial(date = new Date()) {
+          const dia = date.getDay(); // 0=dom, 6=sab
+          if (dia === 0 || dia === 6) return true;
+          return FESTIVOS.has(getLocalDateStr(date));
+        }
+
+        function getBases(date = new Date()) {
+          return esDiaEspecial(date)
+            ? { primer: BASE_PRIMER_FDS,    multi: BASE_MULTI_FDS }
+            : { primer: BASE_PRIMER_SEMANA, multi: BASE_MULTI_SEMANA };
+        }
+
+        // ─── Paleta (tema claro / fintech azul) ──────────────────────────────
+        const C = {
+          bg:        "#EEF9F8",   // fondo general, teal muy claro
+          card:      "#FFFFFF",
+          cardSoft:  "#F2FAF9",
+          border:    "#C8EAE7",
+          text:      "#0A1F1E",
+          textSoft:  "#3D6B67",
+          textFaint: "#7EAAA6",
+          blue:      "#00B5A3",   // verde Karri principal
+          blueDark:  "#009688",   // verde Karri oscuro (hover/gradiente)
+          blueDeep:  "#00524A",   // verde Karri muy oscuro (texto sobre soft)
+          blueSoft:  "#E0F5F3",   // verde Karri suave (fondos de inputs/cards)
+          green:     "#16A34A",   // verde semántico (ganancias, ok)
+          greenSoft: "#E7F7EC",
+          red:       "#E53E5E",
+          redSoft:   "#FDEAEF",
+          amber:     "#F59E0B",
+          amberSoft: "#FEF3E2",
+          violet:    "#7C5CFC",
+          violetSoft:"#F1ECFF",
+        };
+
+        // ─── Utilidades de fecha LOCAL (evita bug UTC) ───────────────────────
+        // Siempre usamos año/mes/día local del dispositivo, nunca toISOString()
+        // porque toISOString() devuelve UTC y en Chile (UTC-3/UTC-4) las 21:00
+        // del domingo ya son lunes en UTC → bug reportado.
+        function getLocalDateStr(date = new Date()) {
+          const y = date.getFullYear();
+          const m = String(date.getMonth() + 1).padStart(2, "0");
+          const d = String(date.getDate()).padStart(2, "0");
+          return `${y}-${m}-${d}`;
+        }
+
+        function getTodayKey() {
+          return getLocalDateStr(new Date());
+        }
+
+        function getLunesKey(dateStr) {
+          // Usamos T12:00:00 sin zona para que el parser la trate como LOCAL
+          const d = new Date(dateStr + "T12:00:00");
+          const day = d.getDay();
+          const diff = day === 0 ? -6 : 1 - day;
+          const lunes = new Date(d);
+          lunes.setDate(d.getDate() + diff);
+          return getLocalDateStr(lunes);
+        }
+
+        function getDomingoKey(lunesStr) {
+          const d = new Date(lunesStr + "T12:00:00");
+          d.setDate(d.getDate() + 6);
+          return getLocalDateStr(d);
+        }
+
+        function formatFecha(dateStr) {
+          const [y, m, d] = dateStr.split("-");
+          return `${d}/${m}/${y}`;
+        }
+
+        // ─── Quincenas ───────────────────────────────────────────────────────
+        // Retorna una key única para la quincena: "YYYY-MM-1" (días 1-15) o "YYYY-MM-2" (días 16-31)
+        function getQuincenaKey(dateStr) {
+          const [y, m, d] = dateStr.split("-");
+          return `${y}-${m}-${parseInt(d) <= 15 ? "1" : "2"}`;
+        }
+
+        // Descripción legible de la quincena
+        function formatQuincena(qKey) {
+          const [y, m, mitad] = qKey.split("-");
+          const meses = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+          const nomMes = meses[parseInt(m) - 1];
+          const diasFin = mitad === "1" ? 15 : new Date(parseInt(y), parseInt(m), 0).getDate();
+          return mitad === "1"
+            ? `1 – 15 ${nomMes} ${y}`
+            : `16 – ${diasFin} ${nomMes} ${y}`;
+        }
+
+        // Quincena actual según hoy
+        function getQuincenaActual() {
+          return getQuincenaKey(getTodayKey());
+        }
+
+        // Total de días en la quincena (para barra de progreso)
+        function getDiasQuincena(qKey) {
+          const [y, m, mitad] = qKey.split("-");
+          if (mitad === "1") return 15;
+          return new Date(parseInt(y), parseInt(m), 0).getDate() - 15;
+        }
+
+        // Día actual dentro de la quincena (1-based)
+        function getDiaEnQuincena() {
+          const hoy = new Date();
+          const d = hoy.getDate();
+          return d <= 15 ? d : d - 15;
+        }
+        // ────────────────────────────────────────────────────────────────────
+
+        function neto(bruto) { return bruto * (1 - IMPUESTO); }
+
+        // calcularPedido usa la base que le pases (primer o multi según contexto)
+
+        // Karri: SKU desde el 1er SKU (sin mínimo), km a $200
+        function calcularPedido(skus, km, base) {
+          return base + skus * POR_SKU + km * POR_KM;
+        }
+
+        function formatCLP(n) {
+          return "$" + Math.round(n).toLocaleString("es-CL");
+        }
+
+        // ─── Combustible (ciudad / autopista) ────────────────────────────────
+        // Cada pedido guarda km (total) y kmAuto (autopista, subconjunto de km).
+        // Los km de ciudad = km - kmAuto.
+        function getKmCiudadAuto(lista) {
+          return (lista || []).reduce((acc, p) => {
+            const kmAuto = Math.min(p.kmAuto || 0, p.km || 0);
+            acc.ciudad += (p.km || 0) - kmAuto;
+            acc.auto   += kmAuto;
+            return acc;
+          }, { ciudad: 0, auto: 0 });
+        }
+
+        function getKmTotales(lista) {
+          return (lista || []).reduce((acc, p) => acc + (p.km || 0), 0);
+        }
+
+        function litrosDe(km, rendimiento) {
+          if (!rendimiento || rendimiento <= 0 || !km) return 0;
+          return km / rendimiento;
+        }
+
+        // config: { rendimientoCiudad, rendimientoAuto, precioLitro }
+        function calcularCombustible(lista, config) {
+          const { ciudad, auto } = getKmCiudadAuto(lista);
+          const litros = litrosDe(ciudad, config.rendimientoCiudad) + litrosDe(auto, config.rendimientoAuto);
+          return litros * (config.precioLitro || 0);
+        }
+
+        const DIAS_NOMBRE = ["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"];
+        const DIAS_FULL   = ["Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"];
+
+        // ─── Hook para mensajes en cola (evita que msg2 borre a msg1) ────────
+        function useMsgQueue() {
+          const [msg, setMsg] = useState("");
+          const timerRef = useRef(null);
+          const showMsg = (text, ms = 2000) => {
+            if (timerRef.current) clearTimeout(timerRef.current);
+            setMsg(text);
+            timerRef.current = setTimeout(() => setMsg(""), ms);
+          };
+          return [msg, showMsg];
+        }
+
+        // ─── SubPedidoRow ─────────────────────────────────────────────────────
+        function SubPedidoRow({ idx, data, onChange, onRemove, baseUsada, tramoColor, esUltimo, configLista }) {
+          const skusN    = parseInt(data.skus) || 0;
+          const kmN      = parseFloat(data.km) || 0;
+          const retornoN = parseFloat(data.retorno) || 0;
+          const kmTotal  = esUltimo ? kmN + retornoN : kmN;
+          const tieneData = data.skus && (data.km !== "" || (esUltimo && data.retorno !== ""));
+          const bruto = tieneData ? calcularPedido(skusN, kmTotal, baseUsada) : null;
+          const inputBase = { width:"100%", padding:"9px 10px", borderRadius:9, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:15, boxSizing:"border-box" };
+          const inputAuto = { ...inputBase, border:`1.5px solid ${C.amber}55`, background:C.amberSoft, color:"#92620A", fontSize:14 };
+
+          return (
+            <div style={{ background:C.amberSoft, borderRadius:12, padding:"11px 12px", border:`1.5px solid ${C.amber}40`, marginBottom:8 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:7 }}>
+                <span style={{ fontSize:11, color:"#92620A", fontWeight:800 }}>
+                  {idx === 0 ? `Pedido #1 · Base ${formatCLP(baseUsada)}` : `Pedido #${idx+1} · Base ${formatCLP(baseUsada)} (75%)`}
+                  {esUltimo && <span style={{ color:C.textFaint, fontWeight:500, marginLeft:5 }}>· último</span>}
+                </span>
+                {idx >= 2 && (
+                  <button onClick={onRemove} style={{ background:"none", border:"none", color:C.red, cursor:"pointer", fontSize:15 }}>✕</button>
+                )}
+              </div>
+              <div style={{ display:"flex", gap:8, marginBottom: esUltimo ? 6 : 0 }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:10, color:C.textSoft, fontWeight:600, display:"block", marginBottom:3 }}>SKUs</label>
+                  <input type="number" value={data.skus} onChange={e => onChange("skus", e.target.value)}
+                    placeholder="Ej: 10" step="1" min="0" style={{...inputBase, padding:"9px 10px"}} />
+                </div>
+                {esUltimo ? (
+                  <div style={{ flex:1, display:"flex", gap:5 }}>
+                    <div style={{ flex:1 }}>
+                      <label style={{ fontSize:10, color:C.textSoft, fontWeight:600, display:"block", marginBottom:3 }}>Kilómetros</label>
+                      <input type="number" value={data.km} onChange={e => onChange("km", e.target.value)}
+                        placeholder="0" step="0.1" min="0" style={{...inputBase, padding:"9px 8px", fontSize:14}} />
+                    </div>
+                    <div style={{ display:"flex", alignItems:"flex-end", paddingBottom:9, color:C.textFaint, fontSize:13 }}>+</div>
+                    <div style={{ flex:1 }}>
+                      <label style={{ fontSize:10, color:C.blue, fontWeight:600, display:"block", marginBottom:3 }}>Retorno</label>
+                      <input type="number" value={data.retorno || ""} onChange={e => onChange("retorno", e.target.value)}
+                        placeholder="0" step="0.1" min="0" style={{...inputBase, padding:"9px 8px", fontSize:14, border:`1.5px solid ${C.blue}40`, background:C.blueSoft, color:C.blueDeep}} />
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ flex:1 }}>
+                    <label style={{ fontSize:10, color:C.textSoft, fontWeight:600, display:"block", marginBottom:3 }}>Kilómetros</label>
+                    <input type="number" value={data.km} onChange={e => onChange("km", e.target.value)}
+                      placeholder="Ej: 2.5" step="0.1" min="0" style={inputBase} />
+                  </div>
+                )}
+              </div>
+              {esUltimo && (kmN > 0 || retornoN > 0) && (
+                <div style={{ fontSize:10, color:C.textFaint, marginBottom:4, textAlign:"right" }}>
+                  km total: {kmN.toFixed(1)} + {retornoN.toFixed(1)} = <span style={{ color:C.blue, fontWeight:700 }}>{kmTotal.toFixed(1)} km</span>
+                </div>
+              )}
+              {configLista && (
+                <div style={{ marginBottom:4 }}>
+                  <label style={{ fontSize:9.5, color:C.blue, fontWeight:600, display:"block", marginBottom:3 }}>🛣️ Km de autopista en este pedido (opcional)</label>
+                  <input type="number" value={data.kmAuto || ""} onChange={e => onChange("kmAuto", e.target.value)}
+                    placeholder="0" step="0.1" min="0" style={{...inputBase, padding:"8px 10px", fontSize:13, border:`1.5px solid ${C.blue}40`, background:C.blueSoft, color:C.blueDeep}} />
+                </div>
+              )}
+              {bruto !== null && (
+                <div style={{ marginTop:4, fontSize:11, color:C.textSoft, display:"flex", justifyContent:"space-between" }}>
+                  <span>Bruto: {formatCLP(bruto)}</span>
+                  <span style={{ fontWeight:800, color:tramoColor }}>Neto: {formatCLP(neto(bruto))}</span>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        // ─── Modal de edición ────────────────────────────────────────────────
+        function EditModal({ pedido, idx, onSave, onClose, tramoColor }) {
+          const [skus, setSkus] = useState(String(pedido.skus));
+          const [km,   setKm]   = useState(String(pedido.km));
+          const [kmAuto, setKmAuto] = useState(String(pedido.kmAuto || ""));
+
+          const skusN = parseInt(skus) || 0;
+          const kmN   = parseFloat(km) || 0;
+          const brutoPreview = skus && km !== "" ? calcularPedido(skusN, kmN, pedido.base) : null;
+
+          const handleSave = () => {
+            const s = parseInt(skus), k = parseFloat(km);
+            if (!s || s < 1 || isNaN(k) || k < 0) return;
+            const kAutoRaw = parseFloat(kmAuto);
+            const kAuto = isNaN(kAutoRaw) ? 0 : Math.min(Math.max(0, kAutoRaw), k);
+            const bruto = calcularPedido(s, k, pedido.base);
+            onSave(idx, { ...pedido, skus: s, km: k, kmAuto: kAuto, bruto, total: neto(bruto) });
+          };
+
+          return (
+            <div style={{ position:"fixed", inset:0, background:"rgba(15,23,42,0.45)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:20, backdropFilter:"blur(2px)" }}>
+              <div style={{ background:C.card, borderRadius:20, padding:"22px 18px", boxShadow:"0 20px 50px rgba(15,23,42,0.25)", maxWidth:340, width:"100%" }}>
+                <div style={{ fontSize:15, fontWeight:800, color:C.blue, marginBottom:14 }}>✏️ Editar Pedido #{idx+1}</div>
+                <div style={{ fontSize:10, color:C.textFaint, marginBottom:12 }}>
+                  Base original: {formatCLP(pedido.base)} · {pedido.hora}
+                  {pedido.esMulti && <span style={{ color:C.amber, fontWeight:700, marginLeft:6 }}>🔀 Multiorden</span>}
+                </div>
+                <div style={{ display:"flex", gap:10, marginBottom:12 }}>
+                  <div style={{ flex:1 }}>
+                    <label style={{ fontSize:10, color:C.textSoft, fontWeight:600, display:"block", marginBottom:4 }}>SKUs</label>
+                    <input type="number" value={skus} onChange={e => setSkus(e.target.value)} placeholder="Ej: 12" step="1" min="1"
+                      style={{ width:"100%", padding:"9px 10px", borderRadius:9, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:15, boxSizing:"border-box" }} />
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <label style={{ fontSize:10, color:C.textSoft, fontWeight:600, display:"block", marginBottom:4 }}>Kilómetros</label>
+                    <input type="number" value={km} onChange={e => setKm(e.target.value)} placeholder="Ej: 3.5" step="0.1" min="0"
+                      style={{ width:"100%", padding:"9px 10px", borderRadius:9, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:15, boxSizing:"border-box" }} />
+                  </div>
+                </div>
+                <div style={{ marginBottom:12 }}>
+                  <label style={{ fontSize:10, color:C.blue, fontWeight:600, display:"block", marginBottom:4 }}>🛣️ Km de autopista (opcional)</label>
+                  <input type="number" value={kmAuto} onChange={e => setKmAuto(e.target.value)} placeholder="0" step="0.1" min="0"
+                    style={{ width:"100%", padding:"9px 10px", borderRadius:9, border:`1.5px solid ${C.blue}40`, background:C.blueSoft, color:C.blueDeep, fontSize:15, boxSizing:"border-box" }} />
+                </div>
+                {brutoPreview !== null && (
+                  <div style={{ background:C.blueSoft, borderRadius:12, padding:"10px 13px", marginBottom:14, fontSize:11, color:C.blueDeep, border:`1px solid ${C.blue}25` }}>
+                    Bruto: {formatCLP(brutoPreview)} → <span style={{ fontWeight:800, color:tramoColor, fontSize:14 }}>Neto: {formatCLP(neto(brutoPreview))}</span>
+                  </div>
+                )}
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={onClose} style={{ flex:1, padding:"12px", borderRadius:11, background:C.cardSoft, border:`1.5px solid ${C.border}`, color:C.textSoft, fontWeight:700, cursor:"pointer" }}>Cancelar</button>
+                  <button onClick={handleSave} style={{ flex:1, padding:"12px", borderRadius:11, background:`linear-gradient(135deg,${C.blue},${C.blueDark})`, border:"none", color:"white", fontWeight:800, cursor:"pointer", boxShadow:`0 6px 16px ${C.blue}40` }}>Guardar</button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // ─── Modal de configuración de combustible ──────────────────────────────
+        function ConfigModal({ config, onSave, onClose }) {
+          const [rendCiudad, setRendCiudad] = useState(String(config.rendimientoCiudad || ""));
+          const [rendAuto, setRendAuto]     = useState(String(config.rendimientoAuto || ""));
+          const [precioLitro, setPrecioLitro] = useState(String(config.precioLitro || ""));
+
+          const rc = parseFloat(rendCiudad);
+          const ra = parseFloat(rendAuto);
+          const p  = parseFloat(precioLitro);
+          const valido = rc > 0 && ra > 0 && p >= 0;
+          const tocoAlgo = rendCiudad !== "" || rendAuto !== "" || precioLitro !== "";
+
+          const handleSave = () => {
+            if (!valido) return;
+            onSave({ rendimientoCiudad: rc, rendimientoAuto: ra, precioLitro: p });
+            onClose();
+          };
+
+          return (
+            <div style={{ position:"fixed", inset:0, background:"rgba(15,23,42,0.45)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:20, backdropFilter:"blur(2px)" }}>
+              <div style={{ background:C.card, borderRadius:20, padding:"22px 18px", boxShadow:"0 20px 50px rgba(15,23,42,0.25)", maxWidth:340, width:"100%" }}>
+                <div style={{ fontSize:15, fontWeight:800, color:C.green, marginBottom:6 }}>⛽ Configurar Combustible</div>
+                <div style={{ fontSize:11, color:C.textSoft, marginBottom:16, lineHeight:1.5 }}>
+                  Con esto calculamos automáticamente cuánto gastas en bencina cada día, usando los km que ya registras en tus pedidos. Tu auto rinde distinto en ciudad y en autopista, así que pedimos ambos valores.
+                </div>
+                <div style={{ marginBottom:14 }}>
+                  <label style={{ fontSize:11, color:C.textSoft, fontWeight:600, display:"block", marginBottom:5 }}>¿Cuántos km rinde tu auto en ciudad, por litro?</label>
+                  <input type="number" value={rendCiudad} onChange={e => setRendCiudad(e.target.value)}
+                    placeholder="Ej: 10" step="0.1" min="0"
+                    style={{ width:"100%", padding:"11px 12px", borderRadius:11, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:16, boxSizing:"border-box" }} />
+                </div>
+                <div style={{ marginBottom:14 }}>
+                  <label style={{ fontSize:11, color:C.textSoft, fontWeight:600, display:"block", marginBottom:5 }}>¿Cuántos km rinde tu auto en autopista, por litro?</label>
+                  <input type="number" value={rendAuto} onChange={e => setRendAuto(e.target.value)}
+                    placeholder="Ej: 14" step="0.1" min="0"
+                    style={{ width:"100%", padding:"11px 12px", borderRadius:11, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:16, boxSizing:"border-box" }} />
+                  <div style={{ fontSize:9.5, color:C.textFaint, marginTop:4 }}>Estos dos casi no cambian, los configuras una sola vez.</div>
+                </div>
+                <div style={{ marginBottom:18 }}>
+                  <label style={{ fontSize:11, color:C.textSoft, fontWeight:600, display:"block", marginBottom:5 }}>¿Cuánto cuesta el litro de combustible hoy?</label>
+                  <input type="number" value={precioLitro} onChange={e => setPrecioLitro(e.target.value)}
+                    placeholder="Ej: 1250" step="1" min="0"
+                    style={{ width:"100%", padding:"11px 12px", borderRadius:11, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:16, boxSizing:"border-box" }} />
+                  <div style={{ fontSize:9.5, color:C.textFaint, marginTop:4 }}>Este valor cámbialo cuando suba o baje la bencina.</div>
+                </div>
+                {!valido && tocoAlgo && (
+                  <div style={{ fontSize:11, color:C.red, marginBottom:12, fontWeight:600 }}>⚠️ Ingresa valores válidos en los tres campos</div>
+                )}
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={onClose} style={{ flex:1, padding:"12px", borderRadius:11, background:C.cardSoft, border:`1.5px solid ${C.border}`, color:C.textSoft, fontWeight:700, cursor:"pointer" }}>Cancelar</button>
+                  <button onClick={handleSave} disabled={!valido} style={{ flex:1, padding:"12px", borderRadius:11, background: valido ? `linear-gradient(135deg,${C.green},#0E8A3E)` : C.cardSoft, border:"none", color: valido ? "white" : C.textFaint, fontWeight:800, cursor: valido ? "pointer" : "not-allowed", boxShadow: valido ? `0 6px 16px ${C.green}40` : "none" }}>Guardar</button>
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // ─── App ──────────────────────────────────────────────────────────────
+        function App() {
+          const [pedidos, setPedidos]       = useState([]);
+          const [skus, setSkus]             = useState("");
+          const [km, setKm]                 = useState("");
+          const [kmAuto, setKmAuto]         = useState("");
+          const [tab, setTab]               = useState("hoy");
+          const [historial, setHistorial]   = useState({});
+          const [ahora, setAhora]           = useState(new Date());
+          const [showMulti, setShowMulti]   = useState(false);
+          const [subPedidos, setSubPedidos] = useState([{ skus:"", km:"", retorno:"", kmAuto:"" }, { skus:"", km:"", retorno:"", kmAuto:"" }]);
+          const [confirmDelete, setConfirmDelete] = useState(null);
+          const [confirmStep, setConfirmStep]     = useState(0);
+          const [semanasAbiertas, setSemanasAbiertas] = useState({});
+          const [editando, setEditando]     = useState(null); // { pedido, idx }
+          const [savedVisible, setSavedVisible] = useState(false);
+          const savedTimerRef = useRef(null);
+          const [confirmPedidoIdx, setConfirmPedidoIdx] = useState(null); // índice del pedido en espera de 2ª confirmación
+          const confirmPedidoTimerRef = useRef(null);
+          const [config, setConfig]         = useState({ rendimientoCiudad: 0, rendimientoAuto: 0, precioLitro: 0 });
+          const [showConfig, setShowConfig] = useState(false);
+
+          // Reloj — actualiza cada minuto
+          useEffect(() => {
+            const t = setInterval(() => setAhora(new Date()), 60000);
+            return () => clearInterval(t);
+          }, []);
+
+          // Carga inicial desde localStorage
+          useEffect(() => {
+            try {
+              const hist = JSON.parse(localStorage.getItem("zubale_hist") || "{}");
+              setHistorial(hist);
+              // ✅ FIX: usa fecha LOCAL, no toISOString()
+              setPedidos(hist[getTodayKey()] || []);
+              const cfg = JSON.parse(localStorage.getItem("zubale_config") || "null");
+              if (cfg) setConfig(cfg);
+            } catch {}
+          }, []);
+
+          // Guardar configuración de combustible
+          const guardarConfig = (nuevaConfig) => {
+            try {
+              localStorage.setItem("zubale_config", JSON.stringify(nuevaConfig));
+              setConfig(nuevaConfig);
+            } catch {}
+          };
+
+
+          // Persistencia — guarda en localStorage cuando cambian los pedidos
+          // ✅ FIX: también actualiza localStorage explícitamente para el día de hoy,
+          //         no depende de que el useEffect relea todo el historial.
+          useEffect(() => {
+            try {
+              const hoy = getTodayKey(); // ← fecha local
+              const hist = JSON.parse(localStorage.getItem("zubale_hist") || "{}");
+              if (pedidos.length === 0) {
+                // Si vaciamos hoy, borramos la clave para no dejar array vacío
+                delete hist[hoy];
+              } else {
+                hist[hoy] = pedidos;
+              }
+              localStorage.setItem("zubale_hist", JSON.stringify(hist));
+              setHistorial({ ...hist });
+
+              // Toast de guardado
+              if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+              setSavedVisible(true);
+              savedTimerRef.current = setTimeout(() => setSavedVisible(false), 1800);
+            } catch {}
+          }, [pedidos]);
+
+          // ─── Tarifa Karri (fija base, variable S-D/festivo) ───────────────
+          const { primer: base, multi: baseMulti } = getBases(ahora);
+          const esFds      = esDiaEspecial(ahora);
+          const tramoColor = C.blue;
+          const horaLabel  = ahora.toLocaleTimeString("es-CL", { hour:"2-digit", minute:"2-digit" });
+          const diaLabel   = DIAS_NOMBRE[ahora.getDay()];
+
+          // ─── useMemo para historial agrupado por quincenas → semanas ─────────
+          const { diasConPedidos, quincenas, quincenasKeys, semanas, semanasKeys } = useMemo(() => {
+            const dias = Object.keys(historial)
+              .filter(d => (historial[d] || []).length > 0)
+              .sort().reverse();
+
+            // Agrupación por quincena
+            const qKeys = {};
+            dias.forEach(dia => {
+              const qk = getQuincenaKey(dia);
+              if (!qKeys[qk]) qKeys[qk] = [];
+              qKeys[qk].push(dia);
+            });
+
+            // Agrupación por semana (para el detalle dentro de cada quincena)
+            const sem = {};
+            dias.forEach(dia => {
+              const lunes = getLunesKey(dia);
+              if (!sem[lunes]) sem[lunes] = [];
+              sem[lunes].push(dia);
+            });
+
+            return {
+              diasConPedidos: dias,
+              quincenas: qKeys,
+              quincenasKeys: Object.keys(qKeys).sort().reverse(),
+              semanas: sem,
+              semanasKeys: Object.keys(sem).sort().reverse()
+            };
+          }, [historial]);
+
+          // ─── Msg con cola (evita que el 2do mensaje borre al 1ro) ───────────
+          const [msg, showMsg] = useMsgQueue();
+
+          const skusN  = parseInt(skus) || 0;
+          const kmN    = parseFloat(km) || 0;
+          const preview = skus && km !== "" && !isNaN(kmN);
+
+          // ─── Agregar pedido ─────────────────────────────────────────────────
+          const agregarPedido = () => {
+            const s = parseInt(skus), k = parseFloat(km);
+            if (!s || s < 1 || isNaN(k) || k < 0) {
+              showMsg("⚠️ Ingresa SKUs y km válidos", 2000); return;
+            }
+            const kAutoRaw = parseFloat(kmAuto);
+            const kAuto = isNaN(kAutoRaw) ? 0 : Math.min(Math.max(0, kAutoRaw), k);
+            const now = new Date();
+            const { primer: baseHoy } = getBases(now);
+            const bruto = calcularPedido(s, k, baseHoy);
+            setPedidos(p => [...p, {
+              skus: s, km: k, kmAuto: kAuto, total: neto(bruto), bruto, base: baseHoy, esMulti: false,
+              hora: now.toLocaleTimeString("es-CL", { hour:"2-digit", minute:"2-digit" })
+            }]);
+            setSkus(""); setKm(""); setKmAuto("");
+            showMsg("✅ Pedido agregado", 1500);
+          };
+
+          // ─── Eliminar pedido individual (doble confirmación inline) ─────────
+          const pedirEliminarPedido = (idx) => {
+            // Si ya estaba pendiente otro, lo cancelamos primero
+            if (confirmPedidoTimerRef.current) clearTimeout(confirmPedidoTimerRef.current);
+            setConfirmPedidoIdx(idx);
+            // Auto-cancela tras 4 segundos si el usuario no confirma
+            confirmPedidoTimerRef.current = setTimeout(() => setConfirmPedidoIdx(null), 4000);
+          };
+          const confirmarEliminarPedido = (idx) => {
+            if (confirmPedidoTimerRef.current) clearTimeout(confirmPedidoTimerRef.current);
+            setConfirmPedidoIdx(null);
+            setPedidos(prev => prev.filter((_, i) => i !== idx));
+            showMsg("🗑 Pedido eliminado", 1500);
+          };
+          const cancelarEliminarPedido = () => {
+            if (confirmPedidoTimerRef.current) clearTimeout(confirmPedidoTimerRef.current);
+            setConfirmPedidoIdx(null);
+          };
+
+          // ─── Editar pedido ──────────────────────────────────────────────────
+          const guardarEdicion = (idx, pedidoEditado) => {
+            setPedidos(prev => prev.map((p, i) => i === idx ? pedidoEditado : p));
+            setEditando(null);
+            showMsg("✅ Pedido editado", 1500);
+          };
+
+          // ─── Multiorden ─────────────────────────────────────────────────────
+          const updateSub = (i, field, val) =>
+            setSubPedidos(prev => prev.map((p, idx) => idx === i ? { ...p, [field]: val } : p));
+          const addSub    = () => setSubPedidos(prev => [...prev, { skus:"", km:"", retorno:"", kmAuto:"" }]);
+          const removeSub = (i) => setSubPedidos(prev => prev.filter((_, idx) => idx !== i));
+
+          const confirmarMultiorden = () => {
+            const now = new Date();
+            const { primer: b, multi: bMulti } = getBases(now);
+            const hora  = now.toLocaleTimeString("es-CL", { hour:"2-digit", minute:"2-digit" });
+            const nuevos = [];
+            for (let i = 0; i < subPedidos.length; i++) {
+              const s = parseInt(subPedidos[i].skus);
+              const k = parseFloat(subPedidos[i].km) || 0;
+              const r = parseFloat(subPedidos[i].retorno) || 0;
+              const esUltimo = i === subPedidos.length - 1;
+              const kmTotal = esUltimo ? k + r : k;
+              if (!s || s < 1 || isNaN(kmTotal) || kmTotal < 0) {
+                showMsg("⚠️ Completa todos los sub-pedidos", 2500); return;
+              }
+              const kAutoRaw = parseFloat(subPedidos[i].kmAuto);
+              const kAuto = isNaN(kAutoRaw) ? 0 : Math.min(Math.max(0, kAutoRaw), kmTotal);
+              const baseUsada = i === 0 ? b : bMulti;
+              const bruto = calcularPedido(s, kmTotal, baseUsada);
+              nuevos.push({
+                skus: s, km: kmTotal, kmEntrega: k, retorno: esUltimo ? r : 0, kmAuto: kAuto,
+                total: neto(bruto), bruto, base: baseUsada,
+                esMulti: true, multiIdx: i, hora
+              });
+            }
+            setPedidos(p => [...p, ...nuevos]);
+            setSubPedidos([{ skus:"", km:"", retorno:"", kmAuto:"" }, { skus:"", km:"", retorno:"", kmAuto:"" }]);
+            setShowMulti(false);
+            showMsg(`✅ Multiorden de ${nuevos.length} pedidos agregada`, 2000);
+          };
+
+          // ─── Eliminar día ───────────────────────────────────────────────────
+          const pedirEliminarDia = (dateStr) => { setConfirmDelete(dateStr); setConfirmStep(1); };
+          const confirmarEliminar1 = () => setConfirmStep(2);
+          const confirmarEliminar2 = () => {
+            const hoy = getTodayKey();
+            if (confirmDelete === hoy) {
+              // ✅ FIX: setPedidos([]) dispara el useEffect que limpia localStorage explícitamente
+              setPedidos([]);
+            } else {
+              const hist = { ...historial };
+              delete hist[confirmDelete];
+              localStorage.setItem("zubale_hist", JSON.stringify(hist));
+              setHistorial(hist);
+            }
+            setConfirmDelete(null);
+            setConfirmStep(0);
+          };
+          const cancelarEliminar = () => { setConfirmDelete(null); setConfirmStep(0); };
+
+          const toggleSemana = (lunes) =>
+            setSemanasAbiertas(prev => ({ ...prev, [lunes]: !prev[lunes] }));
+
+          const totalDia = pedidos.reduce((a, p) => a + p.total, 0);
+          const brutoDia = pedidos.reduce((a, p) => a + (p.bruto || p.total), 0);
+          const kmDia    = getKmTotales(pedidos);
+          const combustibleDia = calcularCombustible(pedidos, config);
+          const teQuedaDia = totalDia - combustibleDia;
+          const configLista = config.rendimientoCiudad > 0 && config.rendimientoAuto > 0;
+
+          const multiTotBruto = subPedidos.reduce((acc, sp, i) => {
+            const s = parseInt(sp.skus) || 0;
+            const k = parseFloat(sp.km) || 0;
+            const r = parseFloat(sp.retorno) || 0;
+            const esUltimo = i === subPedidos.length - 1;
+            const kmTotal = esUltimo ? k + r : k;
+            if (!s) return acc;
+            return acc + calcularPedido(s, kmTotal, i === 0 ? base : baseMulti);
+          }, 0);
+
+          // ─── Render ─────────────────────────────────────────────────────────
+          return (
+            <div style={{ minHeight:"100vh", background:C.bg, fontFamily:"'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif", color:C.text, paddingBottom:74 }}>
+
+              {/* Header */}
+              <div style={{ background:`linear-gradient(135deg,${C.blueDeep},${C.blue})`, padding:"18px 18px 36px", display:"flex", justifyContent:"space-between", alignItems:"flex-start", borderRadius:"0 0 26px 26px" }}>
+                <div>
+                  <div style={{ fontSize:21, fontWeight:800, display:"flex", alignItems:"center", gap:8, color:"#fff", letterSpacing:-0.3 }}>
+                    <span style={{ width:30, height:30, borderRadius:9, background:"rgba(255,255,255,0.16)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+                    </span>
+                    ControlK
+                  </div>
+                  <div style={{ fontSize:12, color:"rgba(255,255,255,0.7)", marginTop:5, fontWeight:500 }}>Sala 127 · Linares · karri</div>
+                </div>
+                <button onClick={() => setShowConfig(true)} title="Configurar combustible"
+                  style={{ background:"rgba(255,255,255,0.16)", border:"none", borderRadius:11, padding:"9px 11px", cursor:"pointer", fontSize:17, lineHeight:1, display:"flex", alignItems:"center", gap:5 }}>
+                  ⚙️{!configLista && <span style={{ width:7, height:7, borderRadius:"50%", background:C.red, display:"inline-block" }}></span>}
+                </button>
+              </div>
+
+              {/* Tarifa activa Karri */}
+              <div style={{ margin:"-24px 14px 0", background:C.card, borderRadius:18, padding:"16px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, boxShadow:"0 10px 30px -8px rgba(0,181,163,0.3)", border:`1px solid ${C.border}`, position:"relative" }}>
+                <div style={{ position:"absolute", top:0, left:16, right:16, height:3, borderRadius:"0 0 6px 6px", background:C.blue }}></div>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:10, color:C.textFaint, letterSpacing:1, marginBottom:4, fontWeight:700, textTransform:"uppercase" }}>Tarifa activa · {diaLabel} {horaLabel}</div>
+                  <div style={{ fontSize:11, color: esFds ? C.amber : C.textSoft, fontWeight:700, marginBottom:3 }}>
+                    {esFds ? "🗓 Sábado / Domingo / Festivo" : "🗓 Lunes – Viernes"}
+                  </div>
+                  <div style={{ fontSize:30, fontWeight:800, color:C.text, lineHeight:1, letterSpacing:-0.5 }}>{formatCLP(base)}</div>
+                  <div style={{ fontSize:11, color:C.textSoft, marginTop:6 }}>
+                    Primer pedido&nbsp;·&nbsp;
+                    <span style={{ color:C.amber, fontWeight:700 }}>Multiorden {formatCLP(baseMulti)}</span>
+                  </div>
+                </div>
+
+                {/* Resumen tarifas Karri */}
+                <div style={{ background:C.cardSoft, borderRadius:12, padding:"9px 11px", fontSize:9.5, lineHeight:1.9, border:`1px solid ${C.border}`, flexShrink:0 }}>
+                  <div style={{ fontWeight:700, color:C.textFaint, marginBottom:2 }}>Tarifas Karri</div>
+                  {[
+                    ["L-V primer pedido", formatCLP(BASE_PRIMER_SEMANA)],
+                    ["L-V multiorden",    formatCLP(BASE_MULTI_SEMANA)],
+                    ["S-D/fest. primer",  formatCLP(BASE_PRIMER_FDS)],
+                    ["S-D/fest. multi",   formatCLP(BASE_MULTI_FDS)],
+                    ["Por SKU",           "$100"],
+                    ["Por km",            "$200"],
+                  ].map(([label, val]) => (
+                    <div key={label} style={{ display:"flex", gap:8, justifyContent:"space-between", color:C.textSoft }}>
+                      <span>{label}</span>
+                      <span style={{ fontWeight:700, color:C.text }}>{val}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* TAB: HOY */}
+              {tab === "hoy" && (
+                <div style={{ padding:"14px" }}>
+
+                  {/* Formulario nuevo pedido */}
+                  <div style={{ background:C.card, borderRadius:18, padding:"16px", marginBottom:14, boxShadow:"0 2px 12px -4px rgba(15,23,42,0.06)", border:`1px solid ${C.border}` }}>
+                    <div style={{ fontSize:11, fontWeight:800, marginBottom:12, color:C.blue, letterSpacing:1 }}>NUEVO PEDIDO</div>
+                    <div style={{ display:"flex", gap:10, marginBottom:10 }}>
+                      {[["SKUs", skus, setSkus, "Ej: 12", "1"], ["Kilómetros", km, setKm, "Ej: 3.5", "0.1"]].map(([label, val, set, ph, step]) => (
+                        <div key={label} style={{ flex:1 }}>
+                          <label style={{ fontSize:10.5, color:C.textSoft, display:"block", marginBottom:5, fontWeight:600 }}>{label}</label>
+                          <input type="number" value={val} onChange={e => set(e.target.value)} placeholder={ph} step={step}
+                            style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:`1.5px solid ${C.border}`, background:C.cardSoft, color:C.text, fontSize:16, fontWeight:600, boxSizing:"border-box" }} />
+                        </div>
+                      ))}
+                    </div>
+
+                    {configLista && (
+                      <div style={{ marginBottom:10 }}>
+                        <label style={{ fontSize:10.5, color:C.blue, display:"block", marginBottom:5, fontWeight:600 }}>🛣️ ¿Cuántos de esos km fueron de autopista? (opcional)</label>
+                        <input type="number" value={kmAuto} onChange={e => setKmAuto(e.target.value)} placeholder="Déjalo vacío si todo fue ciudad" step="0.1" min="0"
+                          style={{ width:"100%", padding:"11px 12px", borderRadius:10, border:`1.5px solid ${C.blueSoft}`, background:C.blueSoft, color:C.blueDark, fontSize:14, fontWeight:600, boxSizing:"border-box" }} />
+                      </div>
+                    )}
+
+                    {preview && (
+                      <div style={{ background:C.blueSoft, borderRadius:12, padding:"11px 13px", marginBottom:10, fontSize:11.5, color:C.blueDark, lineHeight:1.8 }}>
+                        <span style={{ color:C.textSoft }}>Base</span> {formatCLP(base)} + <span style={{ color:C.textSoft }}>SKUs</span> {skusN}×$100={formatCLP(skusN*POR_SKU)} + <span style={{ color:C.textSoft }}>km</span> {formatCLP(kmN*POR_KM)}
+                        <div style={{ fontSize:10.5, color:C.textSoft, marginTop:4 }}>Bruto: {formatCLP(calcularPedido(skusN,kmN,base))} − 15.25%</div>
+                        <div style={{ fontWeight:800, color:C.green, fontSize:19, marginTop:3 }}>Neto: {formatCLP(neto(calcularPedido(skusN,kmN,base)))}</div>
+                      </div>
+                    )}
+
+                    {/* ✅ FIX: msg con clase animación, no desaparece si llega otro msg */}
+                    {msg && (
+                      <div key={msg} className="msg-anim" style={{ fontSize:12, marginBottom:8, fontWeight:600, color: msg.includes("⚠️") ? C.red : C.green }}>
+                        {msg}
+                      </div>
+                    )}
+
+                    <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+                      <button onClick={agregarPedido} style={{ width:"100%", padding:"14px", borderRadius:12, background:`linear-gradient(135deg,${C.blue},${C.blueDeep})`, border:"none", color:"white", fontWeight:700, fontSize:15, cursor:"pointer", boxShadow:"0 6px 16px -4px rgba(0,181,163,0.45)" }}>
+                        + Agregar Pedido
+                      </button>
+                      <button onClick={() => setShowMulti(true)} style={{ width:"100%", padding:"12px", borderRadius:12, background:C.amberSoft, border:`1.5px solid ${C.amber}55`, color:"#92660B", fontWeight:700, fontSize:14, cursor:"pointer" }}>
+                        🔀 Multiorden <span style={{ fontSize:11, fontWeight:500, opacity:0.85 }}>(2° en adelante: {formatCLP(baseMulti)})</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Resumen del día */}
+                  <div style={{ background:C.card, borderRadius:18, padding:"16px", marginBottom:14, boxShadow:"0 2px 12px -4px rgba(15,23,42,0.06)", border:`1px solid ${C.border}` }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <div style={{ fontSize:10.5, color:C.textFaint, letterSpacing:1, fontWeight:700, textTransform:"uppercase" }}>Pedidos hoy</div>
+                        {/* ✅ Toast de guardado */}
+                        {savedVisible && (
+                          <div className="saved-toast" style={{ fontSize:9.5, color:C.green, background:C.greenSoft, borderRadius:5, padding:"2px 7px", fontWeight:700 }}>
+                            ✓ guardado
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ fontSize:22, fontWeight:800, color:C.blue }}>{pedidos.length}</div>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
+                      <div>
+                        <div style={{ fontSize:10.5, color:C.textFaint, letterSpacing:1, fontWeight:700, textTransform:"uppercase" }}>Bruto</div>
+                        <div style={{ fontSize:15, fontWeight:600, color:C.textFaint, textDecoration:"line-through" }}>{formatCLP(brutoDia)}</div>
+                      </div>
+                      <div style={{ textAlign:"right" }}>
+                        <div style={{ fontSize:10.5, color:C.textFaint, letterSpacing:1, fontWeight:700, textTransform:"uppercase" }}>Neto (−15.25%)</div>
+                        <div style={{ fontSize:28, fontWeight:800, color:C.text, letterSpacing:-0.5 }}>{formatCLP(totalDia)}</div>
+                      </div>
+                    </div>
+
+                    {/* Combustible y ganancia real */}
+                    {configLista ? (
+                      pedidos.length > 0 && (
+                        <div style={{ marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}`, display:"flex", justifyContent:"space-between", alignItems:"flex-end" }}>
+                          <div>
+                            <div style={{ fontSize:10.5, color:C.textFaint, letterSpacing:1, fontWeight:700, textTransform:"uppercase" }}>⛽ Combustible ({kmDia.toFixed(1)} km)</div>
+                            <div style={{ fontSize:15, fontWeight:700, color:C.red }}>−{formatCLP(combustibleDia)}</div>
+                          </div>
+                          <div style={{ textAlign:"right" }}>
+                            <div style={{ fontSize:10.5, color:C.textFaint, letterSpacing:1, fontWeight:700, textTransform:"uppercase" }}>💰 Te queda</div>
+                            <div style={{ fontSize:21, fontWeight:800, color:C.green }}>{formatCLP(teQuedaDia)}</div>
+                          </div>
+                        </div>
+                      )
+                    ) : (
+                      <button onClick={() => setShowConfig(true)} style={{ width:"100%", marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}`, background:"none", border:"none", borderTopWidth:1, color:C.blue, fontSize:11, fontWeight:600, cursor:"pointer", textAlign:"center" }}>
+                        ⛽ Configura el rendimiento de tu auto para ver cuánto te queda →
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Lista de pedidos de hoy */}
+                  {pedidos.length === 0 ? (
+                    <div style={{ textAlign:"center", color:C.textFaint, padding:"32px 0", fontSize:13, fontWeight:500 }}>No hay pedidos aún hoy.</div>
+                  ) : (
+                    <>
+                      <div style={{ display:"flex", flexDirection:"column", gap:9, marginBottom:14 }}>
+                        {pedidos.map((p, i) => (
+                          <div key={i} style={{ background: p.esMulti ? C.amberSoft : C.card, borderRadius:14, padding:"13px 15px", border: p.esMulti ? `1px solid ${C.amber}40` : `1px solid ${C.border}`, boxShadow: p.esMulti ? "none" : "0 1px 6px -2px rgba(15,23,42,0.05)" }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:11.5, color:C.textSoft, fontWeight:500 }}>
+                                  🕐 {p.hora} · {p.skus} SKUs · {p.km} km · base {formatCLP(p.base)}
+                                  {p.esMulti && <span style={{ color:"#92660B", marginLeft:5, fontWeight:700 }}>🔀 {p.multiIdx === 0 ? "Multi #1" : `Multi #${p.multiIdx+1}`}</span>}
+                                </div>
+                                <div style={{ fontSize:11, color:C.textFaint, marginTop:2 }}>Bruto: {formatCLP(p.bruto)} − 15.25%</div>
+                                <div style={{ fontSize:18, fontWeight:800, color:C.text, marginTop:2 }}>Neto: {formatCLP(p.total)}</div>
+                              </div>
+                              <div style={{ display:"flex", gap:6, marginLeft:8, alignItems:"center" }}>
+                                {/* Botón editar */}
+                                <button onClick={() => { cancelarEliminarPedido(); setEditando({ pedido: p, idx: i }); }}
+                                  style={{ background:C.blueSoft, border:"none", color:C.blue, borderRadius:9, padding:"7px 10px", cursor:"pointer", fontSize:14 }}>✏️</button>
+
+                                {/* Doble confirmación inline */}
+                                {confirmPedidoIdx === i ? (
+                                  <div className="msg-anim" style={{ display:"flex", gap:5, alignItems:"center" }}>
+                                    <span style={{ fontSize:10, color:C.red, fontWeight:700, whiteSpace:"nowrap" }}>¿Eliminar?</span>
+                                    <button onClick={() => confirmarEliminarPedido(i)}
+                                      style={{ background:C.red, border:"none", color:"white", borderRadius:8, padding:"7px 10px", cursor:"pointer", fontSize:12, fontWeight:700 }}>Sí</button>
+                                    <button onClick={cancelarEliminarPedido}
+                                      style={{ background:C.cardSoft, border:`1px solid ${C.border}`, color:C.textSoft, borderRadius:8, padding:"7px 9px", cursor:"pointer", fontSize:12 }}>No</button>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => pedirEliminarPedido(i)}
+                                    style={{ background:C.redSoft, border:"none", color:C.red, borderRadius:9, padding:"7px 10px", cursor:"pointer", fontSize:14 }}>✕</button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <button onClick={() => pedirEliminarDia(getTodayKey())}
+                        style={{ width:"100%", padding:"12px", borderRadius:12, background:C.redSoft, border:"none", color:C.red, fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                        🗑 Borrar todos los pedidos de hoy
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* TAB: HISTORIAL */}
+              {tab === "historial" && (
+                <div style={{ padding:"14px" }}>
+                  {quincenasKeys.length === 0 ? (
+                    <div style={{ textAlign:"center", color:C.textFaint, padding:"44px 0", fontSize:13, fontWeight:500 }}>Aún no hay historial.</div>
+                  ) : quincenasKeys.map((qk, qIdx) => {
+                    const diasQ     = quincenas[qk] || [];
+                    const esActual  = qk === getQuincenaActual();
+
+                    // Totales de la quincena
+                    const pedidosQ     = diasQ.reduce((acc, d) => acc.concat(historial[d] || []), []);
+                    const netoQ        = pedidosQ.reduce((a, p) => a + p.total, 0);
+                    const brutoQ       = pedidosQ.reduce((a, p) => a + (p.bruto || p.total), 0);
+                    const combustibleQ = calcularCombustible(pedidosQ, config);
+                    const teQuedaQ     = netoQ - combustibleQ;
+                    const numPedidosQ  = pedidosQ.length;
+
+                    // Semanas dentro de esta quincena (filtradas)
+                    const semsDeQ = semanasKeys.filter(lk => {
+                      return semanas[lk].some(d => getQuincenaKey(d) === qk);
+                    });
+
+                    // Barra de progreso (solo quincena actual)
+                    const totalDiasQ  = getDiasQuincena(qk);
+                    const diaActualQ  = getDiaEnQuincena();
+                    const pctProgreso = Math.min(100, Math.round((diaActualQ / totalDiasQ) * 100));
+
+                    const abiertoQ = semanasAbiertas[qk] !== false;
+
+                    return (
+                      <div key={qk} style={{ marginBottom:16 }}>
+
+                        {/* ── Banner quincena ── */}
+                        {esActual ? (
+                          // Quincena en curso: banner destacado con progreso
+                          <div style={{ background:`linear-gradient(135deg,${C.blueDeep},${C.blue})`, borderRadius:20, padding:"16px 16px 14px", marginBottom:10, boxShadow:`0 8px 24px -6px ${C.blue}40` }}>
+                            <div style={{ fontSize:9, color:"rgba(255,255,255,0.5)", letterSpacing:1, textTransform:"uppercase", fontWeight:700, marginBottom:3 }}>Período en curso</div>
+                            <div style={{ fontSize:13, fontWeight:800, color:"#fff", marginBottom:10 }}>{formatQuincena(qk)}</div>
+                            <div style={{ display:"flex", gap:0 }}>
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:28, fontWeight:900, color:"#fff", letterSpacing:-0.5 }}>{formatCLP(netoQ)}</div>
+                                <div style={{ fontSize:9, color:"rgba(255,255,255,0.5)", textTransform:"uppercase", letterSpacing:0.7, marginTop:2 }}>Neto acumulado</div>
+                              </div>
+                            </div>
+                            {/* Barra de progreso */}
+                            <div style={{ marginTop:12 }}>
+                              <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:4, overflow:"hidden" }}>
+                                <div style={{ height:"100%", width:`${pctProgreso}%`, background:"rgba(255,255,255,0.7)", borderRadius:4 }}></div>
+                              </div>
+                              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"rgba(255,255,255,0.4)", marginTop:4 }}>
+                                <span>Día {diaActualQ}</span>
+                                <span>{pctProgreso}% del período</span>
+                                <span>Día {totalDiasQ}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          // Quincenas anteriores: card colapsable
+                          <button onClick={() => toggleSemana(qk)} style={{ width:"100%", background:C.card, border:`1px solid ${C.border}`, borderRadius:18, padding:"14px 16px", cursor:"pointer", textAlign:"left", color:C.text, boxShadow:"0 2px 12px -4px rgba(0,82,74,0.06)", marginBottom:10 }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                              <div>
+                                <div style={{ fontSize:9, color:C.textFaint, letterSpacing:1, textTransform:"uppercase", fontWeight:700, marginBottom:3 }}>Período anterior</div>
+                                <div style={{ fontSize:12.5, fontWeight:800, color:C.text }}>{abiertoQ ? "▾" : "▸"} {formatQuincena(qk)}</div>
+                                <div style={{ fontSize:10, color:C.textFaint, marginTop:2 }}>{numPedidosQ} pedidos · {diasQ.length} días trabajados</div>
+                              </div>
+                              <div style={{ textAlign:"right" }}>
+                                <div style={{ fontSize:10, color:C.textFaint, textDecoration:"line-through" }}>{formatCLP(brutoQ)}</div>
+                                <div style={{ fontSize:19, fontWeight:800, color:C.text }}>{formatCLP(netoQ)}</div>
+                                {configLista && (
+                                  <div style={{ fontSize:10.5, fontWeight:700, color:C.green, marginTop:2 }}>queda {formatCLP(teQuedaQ)}</div>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        )}
+
+                        {/* ── Semanas dentro de la quincena ── */}
+                        {(esActual || abiertoQ) && semsDeQ.map(lunes => {
+                          const domingo    = getDomingoKey(lunes);
+                          const diasSem    = semanas[lunes].filter(d => getQuincenaKey(d) === qk);
+                          const abSem      = semanasAbiertas[lunes] !== false;
+
+                          const pedidosSem   = diasSem.reduce((acc, d) => acc.concat(historial[d] || []), []);
+                          const netoSem      = pedidosSem.reduce((a, p) => a + p.total, 0);
+                          const brutoSem     = pedidosSem.reduce((a, p) => a + (p.bruto || p.total), 0);
+                          const combSem      = calcularCombustible(pedidosSem, config);
+                          const totalPedSem  = pedidosSem.length;
+
+                          return (
+                            <div key={lunes} style={{ marginBottom:10, marginLeft:8 }}>
+                              <button onClick={() => toggleSemana(lunes)} style={{ width:"100%", background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:"11px 14px", cursor:"pointer", textAlign:"left", color:C.text, boxShadow:"0 1px 8px -3px rgba(0,82,74,0.06)" }}>
+                                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                                  <div>
+                                    <div style={{ fontSize:11.5, fontWeight:800, color:C.blue }}>
+                                      {abSem ? "▾" : "▸"} {formatFecha(lunes)} – {formatFecha(domingo)}
+                                    </div>
+                                    <div style={{ fontSize:10, color:C.textFaint, marginTop:2 }}>{totalPedSem} pedidos · {diasSem.length} días</div>
+                                  </div>
+                                  <div style={{ textAlign:"right" }}>
+                                    <div style={{ fontSize:10, color:C.textFaint, textDecoration:"line-through" }}>{formatCLP(brutoSem)}</div>
+                                    <div style={{ fontSize:15, fontWeight:800, color:C.text }}>{formatCLP(netoSem)}</div>
+                                    {configLista && (
+                                      <div style={{ fontSize:10, fontWeight:700, color:C.green, marginTop:1 }}>queda {formatCLP(netoSem - combSem)}</div>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+
+                              {/* Días dentro de la semana */}
+                              {abSem && (
+                                <div style={{ marginTop:6, paddingLeft:10, borderLeft:`2px solid ${C.blueSoft}` }}>
+                                  {diasSem.map(dia => {
+                                    const pd    = historial[dia] || [];
+                                    const tot   = pd.reduce((a, p) => a + p.total, 0);
+                                    const brut  = pd.reduce((a, p) => a + (p.bruto || p.total), 0);
+                                    const kmD   = getKmTotales(pd);
+                                    const combD = calcularCombustible(pd, config);
+                                    const diaObj    = new Date(dia + "T12:00:00");
+                                    const diaNombre = DIAS_FULL[diaObj.getDay()];
+
+                                    return (
+                                      <div key={dia} style={{ background:C.card, borderRadius:13, padding:"12px 14px", marginBottom:8, border:`1px solid ${C.border}` }}>
+                                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:7 }}>
+                                          <div>
+                                            <div style={{ fontWeight:700, color:C.text, fontSize:12 }}>{diaNombre} {formatFecha(dia)}</div>
+                                            <div style={{ fontSize:10, color:C.textFaint, marginTop:2 }}>{pd.length} pedidos · Prom: {formatCLP(tot / pd.length)}</div>
+                                            {configLista && (
+                                              <div style={{ fontSize:10, color:C.red, marginTop:2, fontWeight:600 }}>⛽ −{formatCLP(combD)} ({kmD.toFixed(1)} km)</div>
+                                            )}
+                                          </div>
+                                          <div style={{ textAlign:"right" }}>
+                                            <div style={{ fontSize:10, color:C.textFaint, textDecoration:"line-through" }}>{formatCLP(brut)}</div>
+                                            <div style={{ fontSize:15, fontWeight:800, color:C.text }}>{formatCLP(tot)}</div>
+                                            {configLista && (
+                                              <div style={{ fontSize:11, fontWeight:700, color:C.green, marginTop:2 }}>queda {formatCLP(tot - combD)}</div>
+                                            )}
+                                          </div>
+                                        </div>
+                                        <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:9 }}>
+                                          {pd.map((p, i) => (
+                                            <div key={i} style={{ background: p.esMulti ? C.amberSoft : C.blueSoft, borderRadius:7, padding:"4px 8px", fontSize:9.5, color: p.esMulti ? "#92660B" : C.blueDeep, fontWeight:600 }}>
+                                              {p.esMulti ? "🔀" : "#"}{i+1} · {p.skus}SKU · {p.retorno > 0 ? `${p.kmEntrega}+${p.retorno}km` : `${p.km}km`} · {formatCLP(p.total)}
+                                            </div>
+                                          ))}
+                                        </div>
+                                        <button onClick={() => pedirEliminarDia(dia)}
+                                          style={{ width:"100%", padding:"8px", borderRadius:9, background:C.redSoft, border:"none", color:C.red, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                                          🗑 Borrar pedidos del {formatFecha(dia)}
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Bottom nav */}
+              <div style={{ position:"fixed", bottom:0, left:0, right:0, background:C.card, boxShadow:"0 -4px 18px -4px rgba(15,23,42,0.10)", display:"flex", zIndex:50 }}>
+                {[["hoy","📦","Hoy"],["historial","📅","Historial"]].map(([t, icon, label]) => (
+                  <button key={t} onClick={() => setTab(t)} style={{ flex:1, padding:"11px 0 14px", background:"none", border:"none", borderTop: tab===t ? `3px solid ${C.blue}` : "3px solid transparent", color: tab===t ? C.blue : C.textFaint, cursor:"pointer", display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
+                    <span style={{ fontSize:20 }}>{icon}</span>
+                    <span style={{ fontSize:10.5, fontWeight: tab===t ? 700 : 500 }}>{label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Modal multiorden */}
+              {showMulti && (
+                <div style={{ position:"fixed", inset:0, background:"rgba(15,23,42,0.55)", zIndex:100, display:"flex", alignItems:"flex-end" }}>
+                  <div style={{ background:C.bg, width:"100%", borderRadius:"22px 22px 0 0", padding:"22px 16px 32px", maxHeight:"90vh", overflowY:"auto" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                      <div>
+                        <div style={{ fontSize:16, fontWeight:800, color:"#92660B" }}>🔀 Multiorden</div>
+                        <div style={{ fontSize:10.5, color:C.textFaint, marginTop:3, fontWeight:500 }}>
+                          #1: base {formatCLP(base)} &nbsp;·&nbsp; #2+: base {formatCLP(baseMulti)} (75%)
+                        </div>
+                      </div>
+                      <button onClick={() => setShowMulti(false)} style={{ background:C.card, border:`1px solid ${C.border}`, color:C.textSoft, borderRadius:9, padding:"7px 13px", cursor:"pointer", fontSize:13, fontWeight:600 }}>Cancelar</button>
+                    </div>
+                    {subPedidos.map((sp, i) => (
+                      <SubPedidoRow key={i} idx={i} data={sp}
+                        onChange={(field, val) => updateSub(i, field, val)}
+                        onRemove={() => removeSub(i)}
+                        baseUsada={i === 0 ? base : baseMulti}
+                        tramoColor={i === 0 ? C.blue : "#92660B"}
+                        esUltimo={i === subPedidos.length - 1}
+                        configLista={configLista} />
+                    ))}
+                    <button onClick={addSub} style={{ width:"100%", padding:"11px", borderRadius:11, background:C.amberSoft, border:`1.5px dashed ${C.amber}66`, color:"#92660B", fontWeight:700, fontSize:13, cursor:"pointer", marginBottom:14 }}>
+                      + Agregar otro pedido a la multiorden
+                    </button>
+                    {multiTotBruto > 0 && (
+                      <div style={{ background:C.card, borderRadius:13, padding:"12px 14px", marginBottom:14, border:`1px solid ${C.border}` }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:11 }}>
+                          <span style={{ color:C.textFaint, fontWeight:600 }}>Total bruto</span>
+                          <span style={{ color:C.textFaint, textDecoration:"line-through" }}>{formatCLP(multiTotBruto)}</span>
+                        </div>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginTop:5 }}>
+                          <span style={{ fontSize:11, color:C.textFaint, fontWeight:600 }}>Total neto (−15.25%)</span>
+                          <span style={{ fontSize:19, fontWeight:800, color:"#92660B" }}>{formatCLP(neto(multiTotBruto))}</span>
+                        </div>
+                      </div>
+                    )}
+                    {msg && <div className="msg-anim" style={{ fontSize:12, marginBottom:8, fontWeight:600, color:C.red }}>{msg}</div>}
+                    <button onClick={confirmarMultiorden} style={{ width:"100%", padding:"15px", borderRadius:13, background:`linear-gradient(135deg,${C.amber},#D97706)`, border:"none", color:"white", fontWeight:700, fontSize:15, cursor:"pointer", boxShadow:"0 6px 16px -4px rgba(245,158,11,0.45)" }}>
+                      ✅ Confirmar Multiorden ({subPedidos.length} pedidos)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal edición */}
+              {editando && (
+                <EditModal
+                  pedido={editando.pedido}
+                  idx={editando.idx}
+                  onSave={guardarEdicion}
+                  onClose={() => setEditando(null)}
+                  tramoColor={tramoColor}
+                />
+              )}
+
+              {/* Modal configuración de combustible */}
+              {showConfig && (
+                <ConfigModal
+                  config={config}
+                  onSave={guardarConfig}
+                  onClose={() => setShowConfig(false)}
+                />
+              )}
+
+              {/* Modal confirmación borrar */}
+              {confirmDelete && (
+                <div style={{ position:"fixed", inset:0, background:"rgba(15,23,42,0.5)", zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20, backdropFilter:"blur(2px)" }}>
+                  <div style={{ background:C.card, borderRadius:20, padding:"26px 20px", boxShadow:"0 20px 50px rgba(15,23,42,0.25)", maxWidth:340, width:"100%" }}>
+                    {confirmStep === 1 && (
+                      <>
+                        <div style={{ fontSize:30, textAlign:"center", marginBottom:10 }}>🗑</div>
+                        <div style={{ fontWeight:800, fontSize:15.5, textAlign:"center", marginBottom:7, color:C.text }}>¿Borrar pedidos del {formatFecha(confirmDelete)}?</div>
+                        <div style={{ fontSize:12, color:C.textSoft, textAlign:"center", marginBottom:22, lineHeight:1.5 }}>
+                          Se eliminarán {(historial[confirmDelete] || pedidos).length} pedidos. Esta acción no se puede deshacer.
+                        </div>
+                        <div style={{ display:"flex", gap:10 }}>
+                          <button onClick={cancelarEliminar} style={{ flex:1, padding:"12px", borderRadius:11, background:C.cardSoft, border:`1.5px solid ${C.border}`, color:C.textSoft, fontWeight:700, cursor:"pointer" }}>Cancelar</button>
+                          <button onClick={confirmarEliminar1} style={{ flex:1, padding:"12px", borderRadius:11, background:C.redSoft, border:`1.5px solid ${C.red}40`, color:C.red, fontWeight:800, cursor:"pointer" }}>Sí, borrar</button>
+                        </div>
+                      </>
+                    )}
+                    {confirmStep === 2 && (
+                      <>
+                        <div style={{ fontSize:30, textAlign:"center", marginBottom:10 }}>⚠️</div>
+                        <div style={{ fontWeight:800, fontSize:16, textAlign:"center", color:C.red, marginBottom:7 }}>¿Estás seguro?</div>
+                        <div style={{ fontSize:12, color:C.textSoft, textAlign:"center", marginBottom:22, lineHeight:1.5 }}>
+                          Esta es tu segunda confirmación. Los pedidos del <strong style={{ color:C.text }}>{formatFecha(confirmDelete)}</strong> se borrarán permanentemente.
+                        </div>
+                        <div style={{ display:"flex", gap:10 }}>
+                          <button onClick={cancelarEliminar} style={{ flex:1, padding:"12px", borderRadius:11, background:C.cardSoft, border:`1.5px solid ${C.border}`, color:C.textSoft, fontWeight:700, cursor:"pointer" }}>Cancelar</button>
+                          <button onClick={confirmarEliminar2} style={{ flex:1, padding:"12px", borderRadius:11, background:`linear-gradient(135deg,${C.red},#C2273F)`, border:"none", color:"white", fontWeight:800, cursor:"pointer", boxShadow:`0 6px 16px ${C.red}40` }}>🗑 Borrar definitivamente</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ textAlign:"center", padding:"10px 14px 6px", fontSize:9.5, color:C.textFaint, fontWeight:500 }}>
+                SKU $100 · Km $200 · L-V: $2.400/$1.800 · S-D/Fest: $3.000/$2.400 · Imp. 15.25%
+              </div>
+            </div>
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+
+    <!-- Registro del Service Worker -->
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js")
+            .then(reg => console.log("ControlK SW registrado:", reg.scope))
+            .catch(err => console.warn("SW error:", err));
+        });
+      }
+    </script>
+</body>
+</html>
